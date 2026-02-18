@@ -38,6 +38,7 @@ enum Commands {
         #[arg(short, long)]
         swarm_url: String,
     },
+    Test {},
 }
 
 fn main() {
@@ -77,6 +78,9 @@ fn main() {
             } else {
                 println!("joining inference swarm");
             }
+        }
+        Some(Commands::Test {}) => {
+            scheduling::main();
         }
         None => {}
     }
