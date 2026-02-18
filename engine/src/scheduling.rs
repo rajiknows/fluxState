@@ -102,13 +102,181 @@
 //! using a write cursor to ensure gap-free layer placement.
 //! -----------------------------------------------------------------------------
 
-pub fn phase1_initialize(gpu_layer_cap: &mut Vec<usize>, model_layer: usize) -> usize {
-    gpu_layer_cap.sort_unstable_by(|a, b| b.cmp(a));
+use core::f64;
 
-    let n = gpu_layer_cap.len();
-    let total_capacity: usize = gpu_layer_cap.iter().sum();
+#[derive(Debug, Clone, Default)]
+struct DpState {
+    // The state tracks r = (r1 ≤ r2 ≤ · · · ≤ rm)
+    // as the sorted residual layer counts for partially assigned pipelines,
+    // where each rj ∈ {1, 2, . . . , L − 1}
+    r: Vec<usize>,
+    // f as the count of fully assigned pipelines (containing all L layers).
+    f: usize,
+}
 
-    let k_max = n.min(total_capacity / model_layer);
+impl DpState {
+    fn new() -> Self {
+        Self {
+            r: Vec::new(),
+            f: 0,
+        }
+    }
+    fn normalize(&mut self) {
+        self.r.sort_unstable();
+    }
+}
+#[derive(Debug, Clone)]
+enum Decision {
+    Skip,
+    Extend(usize),
+    StartNew,
+}
 
-    k_max
+struct ResultState {
+    stages: usize,
+    decision: Option<Decision>,
+}
+
+pub fn phase1_naive(
+    gpu_caps: &Vec<usize>,
+    model_layer: usize,
+    alpha: f64,
+    r_rtt: f64,
+    t_comp: f64,
+) {
+    let mut sorted = gpu_caps.clone();
+    // non increasing order
+    sorted.sort_unstable_by(|b, a| b.cmp(a));
+
+    let n = sorted.len();
+    let k_max = n.min(sorted.iter().sum::<usize>() / model_layer);
+
+    // k is number of pipeline replication , we need to maximize k
+    let mut best_k = 0;
+    let mut best_score = f64::MIN;
+    let mut best_trace = vec![];
+
+    for k in 1..=k_max {
+        let (s_star, trace) = solve_for_k(&sorted, model_layer, k);
+
+        let z = (k as f64).powf(alpha) / (t_comp + (s_star as f64 / k as f64) * r_rtt);
+
+        if z > best_score {
+            best_score = z;
+            best_k = k;
+            best_trace = trace;
+        }
+    }
+    println!("Selected k̂ = {best_k}");
+    reconstruct(best_trace, &sorted);
+}
+
+fn solve_for_k(caps: &Vec<usize>, model_layer: usize, k: usize) -> (usize, Vec<Decision>) {
+    let mut trace = vec![];
+    let res = dfs(
+        0,
+        caps,
+        model_layer,
+        k,
+        DpState::new(),
+        &mut vec![],
+        &mut trace,
+    );
+    (res, trace)
+}
+
+const INF: usize = usize::MAX / 4;
+fn dfs(
+    i: usize,
+    caps: &Vec<usize>,
+    model_layer: usize,
+    k: usize,
+    state: DpState,
+    path: &mut Vec<Decision>,
+    best_path: &mut Vec<Decision>,
+) -> usize {
+    if i == caps.len() {
+        if state.f == k {
+            *best_path = path.clone();
+            return 0;
+        }
+        return INF;
+    }
+
+    let mut best = INF;
+    let ci = caps[i];
+
+    // 1. skip
+    path.push(Decision::Skip);
+    let v = dfs(i + 1, caps, model_layer, k, state.clone(), path, best_path);
+    if v < best {
+        best = v;
+    }
+    path.pop();
+
+    // 2. extend
+    for idx in 0..state.r.len() {
+        let mut next = state.clone();
+        next.r[idx] = next.r[idx].saturating_sub(ci);
+
+        if next.r[idx] == 0 {
+            next.r.remove(idx);
+            next.f += 1;
+        }
+
+        next.normalize();
+
+        path.push(Decision::Extend(idx));
+        let v = 1 + dfs(i + 1, caps, model_layer, k, next, path, best_path);
+        if v < best {
+            best = v;
+        }
+        path.pop();
+    }
+
+    // 3. start new
+
+    if state.f + state.r.len() < k {
+        let mut next = state.clone();
+        let residual = model_layer.saturating_sub(ci);
+
+        if residual == 0 {
+            next.f += 1;
+        } else {
+            next.r.push(residual);
+            next.normalize();
+        }
+
+        path.push(Decision::StartNew);
+        let v = 1 + dfs(i + 1, caps, model_layer, k, next, path, best_path);
+        if v < best {
+            best = v;
+        }
+        path.pop();
+    }
+    best
+}
+
+fn reconstruct(trace: Vec<Decision>, caps: &Vec<usize>) {
+    let mut stage_id = 0;
+    for (i, d) in trace.iter().enumerate() {
+        match d {
+            Decision::Skip => {}
+            Decision::Extend(_) | Decision::StartNew => {
+                println!("GPU {} -> Stage {}", i, stage_id);
+                stage_id += 1;
+            }
+        }
+    }
+}
+
+pub fn main() {
+    let gpu_caps = vec![6, 4, 4, 3];
+    let model_layer = 8;
+
+    let alpha = 1.0;
+    let t_comp = 10.0;
+    let r_rtt = 1.0;
+
+    phase1_naive(&gpu_caps, model_layer, alpha, t_comp, r_rtt);
 }
