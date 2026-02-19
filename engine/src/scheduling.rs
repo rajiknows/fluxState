@@ -137,19 +137,20 @@ struct ResultState {
     decision: Option<Decision>,
 }
 
-pub fn phase1_naive(
-    gpu_caps: &Vec<usize>,
-    model_layer: usize,
-    alpha: f64,
-    r_rtt: f64,
-    t_comp: f64,
-) {
+#[derive(Debug, Clone, Copy)]
+struct Gpu {
+    layer_cap: usize,
+    compute_cap: usize,
+}
+
+pub fn phase1_naive(gpu_caps: &Vec<Gpu>, model_layer: usize, alpha: f64, r_rtt: f64, t_comp: f64) {
     let mut sorted = gpu_caps.clone();
     // non increasing order
-    sorted.sort_unstable_by(|b, a| b.cmp(a));
+    sorted.sort_unstable_by(|b, a| b.layer_cap.cmp(&a.layer_cap));
 
     let n = sorted.len();
-    let k_max = n.min(sorted.iter().sum::<usize>() / model_layer);
+    let total_cap: usize = sorted.iter().map(|g| g.layer_cap).sum();
+    let k_max = n.min(total_cap / model_layer);
 
     // k is number of pipeline replication , we need to maximize k
     let mut best_k = 0;
@@ -168,14 +169,68 @@ pub fn phase1_naive(
         }
     }
     println!("Selected k̂ = {best_k}");
-    reconstruct(best_trace, &sorted);
+    let pipelines = reconstruct(best_trace, &sorted);
+
+    for (i, p) in pipelines.iter().enumerate() {
+        println!("Pipeline {i}: {:?}", p);
+    }
+    for pipeline in &pipelines {
+        let capacities: Vec<usize> = pipeline.iter().map(|p| p.layer_cap).collect();
+
+        let compute: Vec<usize> = pipeline.iter().map(|p| p.compute_cap).collect();
+
+        let layers = water_fill(model_layer, &capacities, &compute);
+
+        println!("Layer allocation: {:?}", layers);
+    }
 }
 
-fn solve_for_k(caps: &Vec<usize>, model_layer: usize, k: usize) -> (usize, Vec<Decision>) {
+fn water_fill(model_layer: usize, layer_cap: &[usize], compute_cap: &[usize]) -> Vec<usize> {
+    let total_f: usize = compute_cap.iter().sum();
+
+    let lambda = model_layer as f64 / total_f as f64;
+
+    let mut frac: Vec<f64> = layer_cap
+        .iter()
+        .zip(compute_cap.iter())
+        .map(|(&c, &f)| {
+            let ideal = lambda * f as f64;
+            ideal.min(c as f64)
+        })
+        .collect();
+
+    let mut alloc: Vec<usize> = frac.iter().map(|x| x.floor() as usize).collect();
+
+    let current_sum: usize = alloc.iter().sum();
+    let mut remaining = model_layer.saturating_sub(current_sum);
+
+    let mut remainders: Vec<(usize, f64)> = frac
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| (i, x - x.floor()))
+        .collect();
+
+    remainders.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Hamilton distribution
+    for (idx, _) in remainders {
+        if remaining == 0 {
+            break;
+        }
+        if alloc[idx] < layer_cap[idx] {
+            alloc[idx] += 1;
+            remaining -= 1;
+        }
+    }
+
+    alloc
+}
+
+fn solve_for_k(gpus: &Vec<Gpu>, model_layer: usize, k: usize) -> (usize, Vec<Decision>) {
     let mut trace = vec![];
     let res = dfs(
         0,
-        caps,
+        gpus,
         model_layer,
         k,
         DpState::new(),
@@ -188,14 +243,14 @@ fn solve_for_k(caps: &Vec<usize>, model_layer: usize, k: usize) -> (usize, Vec<D
 const INF: usize = usize::MAX / 4;
 fn dfs(
     i: usize,
-    caps: &Vec<usize>,
+    gpus: &Vec<Gpu>,
     model_layer: usize,
     k: usize,
     state: DpState,
     path: &mut Vec<Decision>,
     best_path: &mut Vec<Decision>,
 ) -> usize {
-    if i == caps.len() {
+    if i == gpus.len() {
         if state.f == k {
             *best_path = path.clone();
             return 0;
@@ -204,11 +259,11 @@ fn dfs(
     }
 
     let mut best = INF;
-    let ci = caps[i];
+    let ci = gpus[i].layer_cap;
 
     // 1. skip
     path.push(Decision::Skip);
-    let v = dfs(i + 1, caps, model_layer, k, state.clone(), path, best_path);
+    let v = dfs(i + 1, gpus, model_layer, k, state.clone(), path, best_path);
     if v < best {
         best = v;
     }
@@ -227,7 +282,7 @@ fn dfs(
         next.normalize();
 
         path.push(Decision::Extend(idx));
-        let v = 1 + dfs(i + 1, caps, model_layer, k, next, path, best_path);
+        let v = 1 + dfs(i + 1, gpus, model_layer, k, next, path, best_path);
         if v < best {
             best = v;
         }
@@ -248,7 +303,7 @@ fn dfs(
         }
 
         path.push(Decision::StartNew);
-        let v = 1 + dfs(i + 1, caps, model_layer, k, next, path, best_path);
+        let v = 1 + dfs(i + 1, gpus, model_layer, k, next, path, best_path);
         if v < best {
             best = v;
         }
@@ -256,27 +311,74 @@ fn dfs(
     }
     best
 }
+fn reconstruct(trace: Vec<Decision>, gpus: &Vec<Gpu>) -> Vec<Vec<Gpu>> {
+    let mut pipelines: Vec<Vec<usize>> = vec![];
+    let mut active: Vec<usize> = vec![];
 
-fn reconstruct(trace: Vec<Decision>, caps: &Vec<usize>) {
-    let mut stage_id = 0;
-    for (i, d) in trace.iter().enumerate() {
-        match d {
+    for (gpu_idx, decision) in trace.iter().enumerate() {
+        match decision {
             Decision::Skip => {}
-            Decision::Extend(_) | Decision::StartNew => {
-                println!("GPU {} -> Stage {}", i, stage_id);
-                stage_id += 1;
+            Decision::StartNew => {
+                pipelines.push(vec![gpu_idx]);
+                active.push(pipelines.len() - 1);
+            }
+            Decision::Extend(p_idx) => {
+                if let Some(&pipe_id) = active.get(*p_idx) {
+                    pipelines[pipe_id].push(gpu_idx);
+                }
             }
         }
     }
+
+    let mut result: Vec<Vec<Gpu>> = vec![];
+
+    for (pid, pipe) in pipelines.iter().enumerate() {
+        println!("Pipeline {pid}:");
+        let mut current = vec![];
+        for (stage, gpu_idx) in pipe.iter().enumerate() {
+            let gpu = gpus[*gpu_idx];
+            println!(
+                "  Stage {stage} -> GPU {gpu_idx} (cap={}, compute={})",
+                gpu.layer_cap, gpu.compute_cap
+            );
+            current.push(gpu);
+        }
+        println!();
+        result.push(current);
+    }
+
+    result
 }
 
 pub fn main() {
-    let gpu_caps = vec![6, 4, 4, 3];
-    let model_layer = 8;
+    let gpus = vec![
+        Gpu {
+            layer_cap: 6,
+            compute_cap: 1,
+        },
+        Gpu {
+            layer_cap: 6,
+            compute_cap: 2,
+        },
+        Gpu {
+            layer_cap: 6,
+            compute_cap: 3,
+        },
+        Gpu {
+            layer_cap: 6,
+            compute_cap: 2,
+        },
+        Gpu {
+            layer_cap: 6,
+            compute_cap: 1,
+        },
+    ];
+
+    let model_layer = 10;
 
     let alpha = 1.0;
     let t_comp = 10.0;
     let r_rtt = 1.0;
 
-    phase1_naive(&gpu_caps, model_layer, alpha, t_comp, r_rtt);
+    phase1_naive(&gpus, model_layer, alpha, r_rtt, t_comp);
 }
