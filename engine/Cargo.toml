@@ -14,14 +14,15 @@ prost = "0.14.3"
 tonic-prost = "0.14.2"
 tokio = { version = "1.49.0", features = ["full"] }
 pyo3 = "0.27.2"
-
+sha2 = "0.10"
+rand = "0.8"
 
 candle-core = "0.8"
 candle-nn = "0.8"
 candle-transformers = "0.8"
 
 
-libp2p = { version = "0.54", features = ["kad", "tcp", "noise"] }
+libp2p = { version = "0.56", features = ["libp2p-kad"] }
 
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"
@@ -32,14 +33,14 @@ clap = { version = "4.5.58", features = ["derive"] }
 tonic-prost-build = "0.14.2"
 
 
-[lib]
-# The name of the native library. This is the name which will be used in Python to import the
-# library (i.e. `import string_sum`). If you change this, you must also change the name of the
-# `#[pymodule]` in `src/lib.rs`.
-name = "fluxstate"
-# "cdylib" is necessary to produce a shared library for Python to import from.
-#
-# Downstream Rust code (including code in `bin/`, `examples/`, and `tests/`) will not be able
-# to `use string_sum;` unless the "rlib" or "lib" crate type is also included, e.g.:
-# crate-type = ["cdylib", "rlib"]
-crate-type = ["cdylib"]
+# [lib]
+# # The name of the native library. This is the name which will be used in Python to import the
+# # library (i.e. `import string_sum`). If you change this, you must also change the name of the
+# # `#[pymodule]` in `src/lib.rs`.
+# name = "fluxstate"
+# # "cdylib" is necessary to produce a shared library for Python to import from.
+# #
+# # Downstream Rust code (including code in `bin/`, `examples/`, and `tests/`) will not be able
+# # to `use string_sum;` unless the "rlib" or "lib" crate type is also included, e.g.:
+# # crate-type = ["cdylib", "rlib"]
+# crate-type = ["cdylib"]

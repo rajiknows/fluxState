@@ -104,6 +104,8 @@
 
 use core::f64;
 
+use crate::gpu::Gpu;
+
 #[derive(Debug, Clone, Default)]
 struct DpState {
     // The state tracks r = (r1 ≤ r2 ≤ · · · ≤ rm)
@@ -135,12 +137,6 @@ enum Decision {
 struct ResultState {
     stages: usize,
     decision: Option<Decision>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Gpu {
-    layer_cap: usize,
-    compute_cap: usize,
 }
 
 pub fn phase1_naive(gpu_caps: &Vec<Gpu>, model_layer: usize, alpha: f64, r_rtt: f64, t_comp: f64) {
@@ -311,6 +307,7 @@ fn dfs(
     }
     best
 }
+
 fn reconstruct(trace: Vec<Decision>, gpus: &Vec<Gpu>) -> Vec<Vec<Gpu>> {
     let mut pipelines: Vec<Vec<usize>> = vec![];
     let mut active: Vec<usize> = vec![];
@@ -382,3 +379,5 @@ pub fn main() {
 
     phase1_naive(&gpus, model_layer, alpha, r_rtt, t_comp);
 }
+
+fn phase2_naive(gpu_caps: &Vec<Gpu>, model_layer: usize, alpha: f64, r_rtt: f64) {}
