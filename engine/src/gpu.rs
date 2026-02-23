@@ -29,3 +29,9 @@ impl Node {
         todo!()
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Gpu {
+    pub layer_cap: usize,
+    pub compute_cap: usize,
+}

@@ -4,9 +4,14 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use crate::dht::DHT;
+
+mod client;
+mod dht;
+mod gpu;
 mod model;
-mod node;
 mod scheduling;
+mod utils;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -84,4 +89,10 @@ fn main() {
         }
         None => {}
     }
+    let dht = DHT::init();
+}
+
+struct SystemInfo {
+    ram: usize,
+    gpu_vram: usize,
 }
