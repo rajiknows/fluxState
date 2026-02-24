@@ -8,9 +8,11 @@ use crate::dht::DHT;
 
 mod client;
 mod dht;
+mod gossip;
 mod gpu;
 mod model;
 mod scheduling;
+mod server;
 mod utils;
 
 #[derive(Parser)]
