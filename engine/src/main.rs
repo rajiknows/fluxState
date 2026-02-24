@@ -89,7 +89,7 @@ fn main() {
         }
         None => {}
     }
-    let dht = DHT::init();
+    // let dht = DHT::init();
 }
 
 struct SystemInfo {
