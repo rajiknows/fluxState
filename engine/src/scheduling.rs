@@ -102,9 +102,13 @@
 //! using a write cursor to ensure gap-free layer placement.
 //! -----------------------------------------------------------------------------
 
-use core::f64;
+use core::{f32, f64};
+use std::collections::HashMap;
 
-use crate::gpu::Gpu;
+use crate::{
+    dht::{LayerId, NodeId, NodePerf},
+    gpu::Gpu,
+};
 
 #[derive(Debug, Clone, Default)]
 struct DpState {
@@ -179,47 +183,6 @@ pub fn phase1_naive(gpu_caps: &Vec<Gpu>, model_layer: usize, alpha: f64, r_rtt: 
 
         println!("Layer allocation: {:?}", layers);
     }
-}
-
-fn water_fill(model_layer: usize, layer_cap: &[usize], compute_cap: &[usize]) -> Vec<usize> {
-    let total_f: usize = compute_cap.iter().sum();
-
-    let lambda = model_layer as f64 / total_f as f64;
-
-    let mut frac: Vec<f64> = layer_cap
-        .iter()
-        .zip(compute_cap.iter())
-        .map(|(&c, &f)| {
-            let ideal = lambda * f as f64;
-            ideal.min(c as f64)
-        })
-        .collect();
-
-    let mut alloc: Vec<usize> = frac.iter().map(|x| x.floor() as usize).collect();
-
-    let current_sum: usize = alloc.iter().sum();
-    let mut remaining = model_layer.saturating_sub(current_sum);
-
-    let mut remainders: Vec<(usize, f64)> = frac
-        .iter()
-        .enumerate()
-        .map(|(i, &x)| (i, x - x.floor()))
-        .collect();
-
-    remainders.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    // Hamilton distribution
-    for (idx, _) in remainders {
-        if remaining == 0 {
-            break;
-        }
-        if alloc[idx] < layer_cap[idx] {
-            alloc[idx] += 1;
-            remaining -= 1;
-        }
-    }
-
-    alloc
 }
 
 fn solve_for_k(gpus: &Vec<Gpu>, model_layer: usize, k: usize) -> (usize, Vec<Decision>) {
@@ -308,6 +271,47 @@ fn dfs(
     best
 }
 
+fn water_fill(model_layer: usize, layer_cap: &[usize], compute_cap: &[usize]) -> Vec<usize> {
+    let total_f: usize = compute_cap.iter().sum();
+
+    let lambda = model_layer as f64 / total_f as f64;
+
+    let mut frac: Vec<f64> = layer_cap
+        .iter()
+        .zip(compute_cap.iter())
+        .map(|(&c, &f)| {
+            let ideal = lambda * f as f64;
+            ideal.min(c as f64)
+        })
+        .collect();
+
+    let mut alloc: Vec<usize> = frac.iter().map(|x| x.floor() as usize).collect();
+
+    let current_sum: usize = alloc.iter().sum();
+    let mut remaining = model_layer.saturating_sub(current_sum);
+
+    let mut remainders: Vec<(usize, f64)> = frac
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| (i, x - x.floor()))
+        .collect();
+
+    remainders.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Hamilton distribution
+    for (idx, _) in remainders {
+        if remaining == 0 {
+            break;
+        }
+        if alloc[idx] < layer_cap[idx] {
+            alloc[idx] += 1;
+            remaining -= 1;
+        }
+    }
+
+    alloc
+}
+
 fn reconstruct(trace: Vec<Decision>, gpus: &Vec<Gpu>) -> Vec<Vec<Gpu>> {
     let mut pipelines: Vec<Vec<usize>> = vec![];
     let mut active: Vec<usize> = vec![];
@@ -380,4 +384,55 @@ pub fn main() {
     phase1_naive(&gpus, model_layer, alpha, r_rtt, t_comp);
 }
 
-fn phase2_naive(gpu_caps: &Vec<Gpu>, model_layer: usize, alpha: f64, r_rtt: f64) {}
+fn phase2_naive(cluster: &HashMap<NodeId, NodePerf>, model_layers: usize) -> Phase2Result {
+    let mut dp: Vec<HashMap<NodeId, f32>> = vec![HashMap::new(); model_layers + 1];
+    for (node_id, perf) in cluster {
+        if let Some(&lat) = perf.layer_latency.get(&1) {
+            dp[1].insert(node_id.clone(), lat);
+        }
+    }
+    let mut parent: Vec<HashMap<NodeId, NodeId>> = vec![HashMap::new(); model_layers + 1];
+
+    for l in 1..model_layers {
+        for (g_i, &cost) in dp[l].clone().iter() {
+            for (g_j, perf_j) in cluster {
+                if let Some(tau) = perf_j.layer_latency.get(&((l + 1) as u32)) {
+                    let rho = cluster[g_i].rtt.get(g_j).copied().unwrap_or(f32::INFINITY);
+                    let new_cost = tau + rho + cost;
+                    let entry = dp[l + 1].entry(g_j.clone()).or_insert(f32::INFINITY);
+                    if new_cost < *entry {
+                        *entry = new_cost;
+                        parent[l + 1].insert(g_j.clone(), g_i.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let (best_gpu, &best_cost) = dp[model_layers]
+        .iter()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
+
+    let mut path = vec![best_gpu.clone()];
+    let mut current = best_gpu.clone();
+
+    for l in (2..=model_layers).rev() {
+        if let Some(prev) = parent[l].get(&current) {
+            path.push(prev.clone());
+            current = prev.clone();
+        }
+    }
+
+    path.reverse();
+
+    Phase2Result {
+        total_latency: best_cost,
+        path,
+    }
+}
+
+struct Phase2Result {
+    total_latency: f32,
+    path: Vec<NodeId>,
+}
