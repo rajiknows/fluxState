@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, hash_map},
-    time::Instant,
-};
+use std::{collections::HashMap, sync::RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,20 +6,20 @@ pub type NodeId = u64;
 pub type RamCapacity = usize;
 
 pub struct DHT {
-    pub inner: HashMap<NodeId, NodePerf>,
+    pub inner: RwLock<HashMap<NodeId, NodePerf>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodePerf {
     pub node_id: String,
     pub ram_tokens: usize,
     pub layer_latency: HashMap<LayerId, f32>,
     pub rtt: HashMap<NodeId, f32>,
-    // pub last_updated: Instant,
+    pub timestamp_ms: u64,
 }
 
 pub struct PerfMap {
-    pub inner: HashMap<NodeId, NodePerf>,
+    pub inner: RwLock<HashMap<NodeId, NodePerf>>,
 }
 
 pub type LayerId = u32;
